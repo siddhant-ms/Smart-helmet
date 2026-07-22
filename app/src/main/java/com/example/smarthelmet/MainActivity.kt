@@ -71,8 +71,21 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.ui.text.style.TextAlign
+
+
 
 data class Contact(
     val name: String,
@@ -238,8 +251,7 @@ class MainActivity : ComponentActivity() {
                         android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 )
 
-        fusedLocationClient =
-            LocationServices.getFusedLocationProviderClient(this)
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         if (ActivityCompat.checkSelfPermission(
                 this,
                 Manifest.permission.ACCESS_FINE_LOCATION
@@ -252,28 +264,21 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-
-
-
         startLocationUpdates()
+
         setContent {
             SmartHelmetTheme {
                 val navController = rememberNavController()
 
-                // Scaffold provides the structural layout for the bottom bar
-                Scaffold(
-                    bottomBar = {
-                        // We will build this function in Step 2!
-                        // BottomNavigationBar(navController = navController)
-                    },
-                    containerColor = Color(0xFF090909) // Keeps the dark theme background
-                ) { innerPadding ->
-
-                    // The NavHost handles screen swapping while leaving the bottom bar intact
+                // Box stacks elements on top of each other
+                Box(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    // 1. Screen Content (Fills 100% of the full screen height)
                     NavHost(
                         navController = navController,
                         startDestination = BottomNavItem.Home.route,
-                        modifier = Modifier.padding(innerPadding) // Prevents content from hiding behind the bar
+                        modifier = Modifier.fillMaxSize()
                     ) {
                         composable(BottomNavItem.Home.route) {
                             HomeScreen(navController)
@@ -285,9 +290,20 @@ class MainActivity : ComponentActivity() {
                             TelemetryScreen(navController, latitude, longitude, speed, accuracy)
                         }
                         composable(BottomNavItem.Helplines.route) {
-                            // We will build this screen in Step 3!
-                            // HelplinesScreen()
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Helplines Screen Coming Soon", color = Color.White)
+                            }
                         }
+                    }
+
+                    // 2. Navigation Bar (Overlaid at the bottom)
+                    Box(
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    ) {
+                        BottomNavigationBar(navController = navController)
                     }
                 }
             }
@@ -314,29 +330,121 @@ fun HomeScreen(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.FillBounds
         )
-
-        Button(
-            onClick = {
-                navController.navigate("intermediate")
-            },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 40.dp)
-                .fillMaxWidth(0.5f)
-                .height(50.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White.copy(alpha = 0.2f),
-                contentColor = Color.White
-            ),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Text("CONTINUE")
-        }
     }
 }
 
 
 //hehehehhehe
+@Composable
+fun BottomNavigationBar(navController: NavController) {
+    val items = listOf(
+        BottomNavItem.Home,
+        BottomNavItem.Contacts,
+        BottomNavItem.Telemetry,
+        BottomNavItem.Helplines
+    )
+
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
+    // Calculates which tab is active for the sliding outer glow
+    val selectedIndex = items.indexOfFirst { it.route == currentRoute }.coerceAtLeast(0)
+    val glowX by animateFloatAsState(targetValue = selectedIndex * 250f, label = "glowAnimation")
+
+    // The Main Outer Bar
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, bottom = 24.dp)
+            .height(56.dp)
+            .background(Color.Transparent)
+            // OUTER BORDER: Uses the sliding glowX animation (No 'isSelected' check here)
+            .border(
+                width = 1.dp,
+                Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0.0f to Color.White.copy(alpha = 0.35f), // Dimmer top-left glow
+                        0.08f to Color.Transparent,              // Cuts the glow off quickly
+                        0.92f to Color.Transparent,              // Keeps the entire middle totally clean
+                        1.0f to Color.White.copy(alpha = 0.05f)  // Very faint bottom-right reflection
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+                ),
+                shape = RoundedCornerShape(percent = 50)
+            )
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items.forEach { item ->
+            // This is where 'isSelected' is actually defined!
+            val isSelected = currentRoute == item.route
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null // Removes the default rectangular ripple
+                    ) {
+                        if (currentRoute != item.route) {
+                            navController.navigate(item.route) {
+                                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    }
+                    .padding(vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                // INNER BOX: The 3D Glassy Oval Highlight (Wraps the Icon only)
+                Box(
+                    modifier = Modifier
+                        .width(60.dp)
+                        .height(28.dp)
+                        .background(Color.Transparent) // Fully transparent center
+                        // INNER BORDER: Uses 'isSelected' for the dual-edge reflection
+                        .border(
+                            width = if (isSelected) 1.dp else 0.dp,
+                            brush = if (isSelected) {
+                                Brush.linearGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.7f), // Bright top-left reflection
+                                        Color.Transparent,              // Clear middle
+                                        Color.Transparent,              // Clear middle
+                                        Color.White.copy(alpha = 0.4f)  // Secondary bottom-right reflection
+                                    ),
+                                    start = Offset(0f, 0f),
+                                    end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+                                )
+                            } else {
+                                Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+                            },
+                            shape = RoundedCornerShape(percent = 50)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = item.title,
+                        tint = if (isSelected) Color.White else Color.Gray.copy(alpha = 0.8f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Text(
+                    text = item.title,
+                    fontSize = 11.sp,
+                    color = if (isSelected) Color.White else Color.Gray.copy(alpha = 0.8f),
+                    fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                )
+            }
+        }
+    }
+}
 
 
 
@@ -404,16 +512,39 @@ fun ManageContactsScreen(navController: NavController) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 20.dp)
-                .padding(top = 80.dp, bottom = 16.dp)
+                // INCREASED BOTTOM PADDING TO 80.dp SO FLOATING BAR DOESN'T COVER THE SAVE BUTTON
+                .padding(top = 80.dp, bottom = 120.dp)
         ) {
+            // The Top Header Texts
             Text(
-                text = "CONTACT MANAGER",
+                text = "Contact Manager",
                 color = Color.White,
-                fontSize = 26.sp,
+                fontSize = 28.sp,
                 fontWeight = FontWeight.Bold
             )
 
-            Spacer(modifier = Modifier.height(20.dp))
+
+
+            // The little "EMERGENCY CONTACTS" label with the dot
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(Color.Gray.copy(alpha = 0.8f), RoundedCornerShape(50))
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "EMERGENCY CONTACTS",
+                    color = Color.Gray.copy(alpha = 0.8f),
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp, // Spreads the letters out slightly
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Contact Cards Scrollable Area
             Column(
@@ -422,11 +553,25 @@ fun ManageContactsScreen(navController: NavController) {
                     .verticalScroll(rememberScrollState())
             ) {
                 contacts.forEach { contact ->
+                    // The Glassy Contact Card
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 6.dp)
-                            .border(1.dp, Color.DarkGray, RoundedCornerShape(12.dp))
+                            .background(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color(0xFF1E1E1E), // Slightly lighter top
+                                        Color(0xFF0A0A0A)  // Deep shadow bottom
+                                    )
+                                ),
+                                shape = RoundedCornerShape(20.dp) // Softer, rounder corners
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = Color.White.copy(alpha = 0.08f), // Faint outer glare
+                                shape = RoundedCornerShape(20.dp)
+                            )
                             .padding(16.dp)
                     ) {
                         Row(
@@ -434,32 +579,76 @@ fun ManageContactsScreen(navController: NavController) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            // Text Column gets weight(1f) so it expands to fit names/numbers horizontally
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = contact.name,
-                                    color = Color.White,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = contact.number,
-                                    color = Color.Gray,
-                                    fontSize = 14.sp
+                            // Left Avatar Icon
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(
+                                        color = Color.White.copy(alpha = 0.05f),
+                                        shape = RoundedCornerShape(percent = 50)
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color.White.copy(alpha = 0.1f),
+                                        shape = RoundedCornerShape(percent = 50)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = "User Icon",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
-                            // Clean Delete Button per item
-                            Button(
-                                onClick = { contacts.remove(contact) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color.Red.copy(alpha = 0.2f),
-                                    contentColor = Color.Red
-                                ),
-                                shape = RoundedCornerShape(8.dp)
+                            // Center Text (Name & Number)
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 16.dp)
                             ) {
-                                Text("Delete", fontSize = 12.sp)
+                                Text(
+                                    text = contact.name,
+                                    color = Color.White,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = contact.number,
+                                    color = Color.Gray,
+                                    fontSize = 13.sp
+                                )
+                            }
+
+                            // Right Delete Icon (Trash Can)
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(
+                                        color = Color.White.copy(alpha = 0.05f),
+                                        shape = RoundedCornerShape(percent = 50)
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color.White.copy(alpha = 0.1f),
+                                        shape = RoundedCornerShape(percent = 50)
+                                    )
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) {
+                                        contacts.remove(contact)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Delete Contact",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                         }
                     }
@@ -467,39 +656,91 @@ fun ManageContactsScreen(navController: NavController) {
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-
-            // Main Save & Sync Button at bottom
-            Button(
-                onClick = {
-                    val jsonArray = JSONArray()
-                    contacts.forEach { jsonArray.put("${it.name}|${it.number}") }
-
-                    prefs.edit()
-                        .putString("contacts", jsonArray.toString())
-                        .apply()
-
-                    (context as? MainActivity)?.sendContactsToBluetooth(contacts)
-                },
+            // Unified Glassy Action Pill (Save & Add)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF8800)),
-                shape = RoundedCornerShape(12.dp)
+                    .height(64.dp)
+                    .background(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                // Cranked up to 35% opacity for a much brighter internal glow
+                                Color(0xFF7ED4E0).copy(alpha = 0.35f),
+                                // Fades to 15% at the bottom so it still feels deep, but stays bright
+                                Color(0xFF7ED4E0).copy(alpha = 0.15f)
+                            )
+                        ),
+                        shape = RoundedCornerShape(percent = 50)
+                    )
+                    .border(
+                        width = 1.dp,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.5f),  // Bright top glare
+                                Color.White.copy(alpha = 0.25f), // Keeps the glow alive along the sides
+                                Color.White.copy(alpha = 0.4f)   // Bright bottom glare
+                            )
+                        ),
+                        shape = RoundedCornerShape(percent = 50)
+                    )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        // Trigger the Save & Sync logic when clicking the main pill
+                        val jsonArray = JSONArray()
+                        contacts.forEach { jsonArray.put("${it.name}|${it.number}") }
+
+                        prefs.edit()
+                            .putString("contacts", jsonArray.toString())
+                            .apply()
+
+                        (context as? MainActivity)?.sendContactsToBluetooth(contacts)
+                    }
             ) {
-                Text("Save & Sync to Helmet", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                // Perfectly centered Save text
+                Text(
+                    text = "Save & Sync to Helmet",
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+
+                // Circular "+" Add Button nested on the right side
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 8.dp)
+                        .size(48.dp)
+                        .background(
+                            color = Color(0xFF7ED4E0).copy(alpha = 0.15f), // Soft cyan inner glow
+                            shape = RoundedCornerShape(percent = 50)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = Color(0xFF7ED4E0).copy(alpha = 0.4f), // Sharp cyan rim light
+                            shape = RoundedCornerShape(percent = 50)
+                        )
+                        .clickable {
+                            contactPicker.launch(null)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "+",
+                        color = Color(0xFF7ED4E0), // Vivid cyan text
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
+            // Main Save & Sync Button at bottom
+
         }
 
-        // Floating Action Button (+)
-        FloatingActionButton(
-            onClick = { contactPicker.launch(null) },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = 80.dp),
-            containerColor = Color(0xFFFF8800)
-        ) {
-            Text("+", fontSize = 28.sp, color = Color.White)
-        }
+
+
     }
 }
             // heheheheheheh
@@ -516,7 +757,7 @@ fun TelemetryScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF090909))
-            .padding(20.dp),
+            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
 
