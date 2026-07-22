@@ -1,0 +1,33 @@
+# Android Studio / Gradle / Kotlin
+.gradle/
+build/
+app/build/
+*.apk
+*.aar
+*.aab
+*.dex
+*.class
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.navigation/
+*.jks
+*.keystore
+
+# Arduino IDE / ESP32
+bin/
+out/
+.vscode/
+.clang-d/
+*.bin
+*.elf
+*.hex
+*.map
+*.sym
+
+# OS & Caches
+.DS_Store
+Thumbs.db
+*.log
