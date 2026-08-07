@@ -1,6 +1,9 @@
 package com.example.smarthelmet
 
+import android.annotation.SuppressLint
 import android.app.*
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.Intent
 import android.os.Binder
@@ -17,6 +20,7 @@ import org.json.JSONObject
 import org.maplibre.geojson.Point
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 class LocationService : Service() {
 
@@ -25,24 +29,28 @@ class LocationService : Service() {
     private lateinit var locationCallback: LocationCallback
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Map Tracking States
+    private var telemetrySocket: BluetoothSocket? = null
+    private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+
     private val _routePoints = MutableStateFlow<List<Point>>(emptyList())
+    val routePoints: StateFlow<List<Point>> = _routePoints
+
     private val _matchedRoutePoints = MutableStateFlow<List<Point>>(emptyList())
     val matchedRoutePoints: StateFlow<List<Point>> = _matchedRoutePoints
 
     private val _isTracking = MutableStateFlow(false)
     val isTracking: StateFlow<Boolean> = _isTracking
 
-    // --- DASHBOARD METRIC STATES ---
-    private val _rideDistance = MutableStateFlow(0f) // Stored in kilometers
+    private val _rideDistance = MutableStateFlow(0f)
     val rideDistance: StateFlow<Float> = _rideDistance
 
-    private val _maxSpeed = MutableStateFlow(0f) // Stored in km/h
+    private val _maxSpeed = MutableStateFlow(0f)
     val maxSpeed: StateFlow<Float> = _maxSpeed
 
-    private val _rideStartTime = MutableStateFlow(0L) // Stored in milliseconds
+    private val _rideStartTime = MutableStateFlow(0L)
     val rideStartTime: StateFlow<Long> = _rideStartTime
-    // -------------------------------
+
+    private var lastBluetoothSendTime = 0L
 
     inner class LocalBinder : Binder() {
         fun getService(): LocationService = this@LocationService
@@ -56,21 +64,38 @@ class LocationService : Service() {
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
+                if (!_isTracking.value) return
+
                 val location = result.lastLocation ?: return
 
+                // 1. STRICT ACCURACY: Reject anything worse than 15 meters.
+                // This will instantly kill 99% of indoor desk drift.
                 if (location.hasAccuracy() && location.accuracy > 15f) return
 
-                // Handle Max Speed (location.speed is meters/sec, multiply by 3.6 for km/h)
+                // 2. SPEED CALCULATION
                 var currentSpeedKmh = location.speed * 3.6f
 
-                // Ignore GPS drift while stationary
-                if (currentSpeedKmh < 2f) {
+                // Clamped to 6 km/h. If it's slower than brisk walking, ignore it.
+                if (currentSpeedKmh < 6.0f) {
                     currentSpeedKmh = 0f
                 }
 
                 if (currentSpeedKmh > _maxSpeed.value) {
                     _maxSpeed.value = currentSpeedKmh
                 }
+
+                // 3. BLUETOOTH & DASHBOARD
+                val currentTime = System.currentTimeMillis()
+                val timeSinceLastSend = currentTime - lastBluetoothSendTime
+                val requiredInterval = if (currentSpeedKmh >= 10f) 500L else 2000L
+                if (timeSinceLastSend >= requiredInterval) {
+                    sendSpeedToHelmet(currentSpeedKmh.toInt())
+                    lastBluetoothSendTime = currentTime
+                }
+
+                // 4. THE ANTI-DRIFT GATE
+                // If clamped to 0, stop right here.
+                if (currentSpeedKmh == 0f) return
 
                 val newPoint = Point.fromLngLat(location.longitude, location.latitude)
                 val currentList = _routePoints.value
@@ -84,17 +109,37 @@ class LocationService : Service() {
                         results
                     )
 
-                    if (results[0] < 5.0f) {
-                        Log.d("LocationService", "Point too close, skipping (${results[0]}m)")
-                        return
-                    }
+                    // 5. DISTANCE FILTER: Must move at least 5 meters
+                    if (results[0] < 5.0f) return
 
-                    // Add to total distance (converted from meters to kilometers)
                     _rideDistance.value += (results[0] / 1000f)
                 }
 
                 _routePoints.value = currentList + newPoint
-                Log.d("LocationService", "New raw point added. Total: ${currentList.size + 1}")
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendSpeedToHelmet(speed: Int) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                if (telemetrySocket == null || !telemetrySocket!!.isConnected) {
+                    val adapter = BluetoothAdapter.getDefaultAdapter()
+                    val device = adapter?.bondedDevices?.find { it.name == "SmartHelmet" }
+                    if (device != null) {
+                        telemetrySocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                        telemetrySocket?.connect()
+                    }
+                }
+                if (telemetrySocket?.isConnected == true) {
+                    val message = "S:$speed\n"
+                    telemetrySocket?.outputStream?.write(message.toByteArray())
+                    telemetrySocket?.outputStream?.flush()
+                }
+            } catch (e: Exception) {
+                try { telemetrySocket?.close() } catch (ex: Exception) {}
+                telemetrySocket = null
             }
         }
     }
@@ -103,7 +148,6 @@ class LocationService : Service() {
         if (_isTracking.value) return
         _isTracking.value = true
 
-        // Reset all metrics for the new ride
         _routePoints.value = emptyList()
         _matchedRoutePoints.value = emptyList()
         _rideDistance.value = 0f
@@ -113,57 +157,76 @@ class LocationService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
 
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000)
-            .setMinUpdateIntervalMillis(1000)
-            .setMinUpdateDistanceMeters(3f)
+            .setMinUpdateIntervalMillis(500)
             .build()
 
         try {
             fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
-
             serviceScope.launch {
                 while (_isTracking.value) {
-                    delay(5000) // CHANGED: Snap every 5 seconds instead of 10
+                    delay(10000)
                     snapToRoadNetwork()
                 }
             }
         } catch (e: SecurityException) {
-            Log.e("LocationService", "Location permission denied", e)
             e.printStackTrace()
         }
     }
 
-    fun stopTracking() {
+    fun stopTracking(rideName: String) {
         _isTracking.value = false
         fusedLocationClient.removeLocationUpdates(locationCallback)
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+
+        try { telemetrySocket?.close() } catch (e: Exception) {}
+        telemetrySocket = null
+
+        val finalDistance = _rideDistance.value
+        val finalMaxSpeed = _maxSpeed.value
+        val finalStartTime = _rideStartTime.value
+        val finalDuration = System.currentTimeMillis() - finalStartTime
+
+        val rawPoints = _routePoints.value.toList()
+        val matchedPoints = _matchedRoutePoints.value.toList()
+
+        serviceScope.launch(Dispatchers.IO) {
+            if (rawPoints.isNotEmpty() && finalDistance >= 0.1f) {
+                try {
+                    val db = com.example.smarthelmet.database.RideDatabase.getDatabase(applicationContext)
+                    val newRide = com.example.smarthelmet.database.RideEntity(
+                        name = rideName,
+                        startTime = finalStartTime,
+                        durationMs = finalDuration,
+                        distanceKm = finalDistance,
+                        maxSpeedKmh = finalMaxSpeed,
+                        rawRoutePoints = rawPoints,
+                        matchedRoutePoints = matchedPoints
+                    )
+                    db.rideDao().insertRide(newRide)
+                } catch (e: Exception) {}
+            }
+            withContext(Dispatchers.Main) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
     }
 
     private fun snapToRoadNetwork() {
         val currentRaw = _routePoints.value
-        Log.d("LocationService", "snapToRoadNetwork called: Raw=${currentRaw.size}, Matched=${_matchedRoutePoints.value.size}")
-
-        if (currentRaw.size < 2) {
-            Log.d("LocationService", "Not enough raw points yet (${currentRaw.size})")
-            return
-        }
+        if (currentRaw.size < 2) return
 
         val chunks = currentRaw.windowed(size = 90, step = 89, partialWindows = true)
         val allSnapped = mutableListOf<Point>()
 
         try {
-            for ((chunkIndex, chunk) in chunks.withIndex()) {
+            for (chunk in chunks) {
                 if (chunk.size < 2) {
-                    Log.d("LocationService", "Chunk $chunkIndex: skipping (only ${chunk.size} points)")
                     allSnapped.addAll(chunk)
                     continue
                 }
 
-                Log.d("LocationService", "Processing chunk $chunkIndex with ${chunk.size} points")
                 val coordsString = chunk.joinToString(";") { "${it.longitude()},${it.latitude()}" }
-                val urlString = "https://router.project-osrm.org/match/v1/driving/$coordsString?overview=full&geometries=geojson"
-
-                Log.d("LocationService", "Calling OSRM: $urlString")
+                val urlString = "https://router.project-osrm.org/match/v1/driving/$coordsString?overview=full&geometries=geojson&tidy=true"
                 val url = URL(urlString)
 
                 val connection = url.openConnection() as HttpURLConnection
@@ -171,44 +234,29 @@ class LocationService : Service() {
                 connection.connectTimeout = 5000
                 connection.readTimeout = 5000
 
-                try {
-                    if (connection.responseCode == 200) {
-                        val response = connection.inputStream.bufferedReader().readText()
-                        Log.d("LocationService", "OSRM response received (${response.length} chars)")
+                if (connection.responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    val json = JSONObject(response)
+                    val matchings = json.optJSONArray("matchings")
 
-                        val json = JSONObject(response)
-                        val matchings = json.optJSONArray("matchings")
+                    if (matchings != null && matchings.length() > 0) {
+                        val geometry = matchings.getJSONObject(0).getJSONObject("geometry")
+                        val coords = geometry.getJSONArray("coordinates")
 
-                        if (matchings != null && matchings.length() > 0) {
-                            val geometry = matchings.getJSONObject(0).getJSONObject("geometry")
-                            val coords = geometry.getJSONArray("coordinates")
-
-                            Log.d("LocationService", "Got ${coords.length()} snapped coordinates from OSRM")
-
-                            for (i in 0 until coords.length()) {
-                                val pointArray = coords.getJSONArray(i)
-                                allSnapped.add(Point.fromLngLat(pointArray.getDouble(0), pointArray.getDouble(1)))
-                            }
-                        } else {
-                            Log.w("LocationService", "No matchings in OSRM response")
+                        for (i in 0 until coords.length()) {
+                            val pointArray = coords.getJSONArray(i)
+                            allSnapped.add(Point.fromLngLat(pointArray.getDouble(0), pointArray.getDouble(1)))
                         }
-                    } else {
-                        Log.e("LocationService", "OSRM returned status ${connection.responseCode}")
                     }
-                } finally {
-                    connection.disconnect()
                 }
+                connection.disconnect()
             }
 
             if (allSnapped.isNotEmpty()) {
-                Log.d("LocationService", "Updating matchedRoutePoints with ${allSnapped.size} points")
                 _matchedRoutePoints.value = allSnapped
-            } else {
-                Log.w("LocationService", "No snapped points to update")
             }
 
         } catch (e: Exception) {
-            Log.e("LocationService", "Error in snapToRoadNetwork", e)
             e.printStackTrace()
         }
     }
@@ -236,6 +284,8 @@ class LocationService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try { telemetrySocket?.close() } catch (e: Exception) {}
+        telemetrySocket = null
         serviceScope.cancel()
     }
 

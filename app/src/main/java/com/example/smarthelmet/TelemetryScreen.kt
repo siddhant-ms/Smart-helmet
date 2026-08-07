@@ -6,9 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.graphics.RectF
 import android.os.Build
 import android.os.IBinder
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -16,10 +16,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,41 +42,40 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
-import org.json.JSONArray
-import org.json.JSONObject
 
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
-import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
-import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
-import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddLocation
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Icon
-import androidx.compose.ui.graphics.SolidColor
 
-data class CustomMarker(val name: String, val lat: Double, val lng: Double)
+import com.example.smarthelmet.database.RideDatabase
+import com.example.smarthelmet.database.RideEntity
 
 @Composable
 fun TelemetryScreen(
@@ -85,26 +87,30 @@ fun TelemetryScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val prefs = context.getSharedPreferences("smart_helmet_prefs", Context.MODE_PRIVATE)
 
     MapLibre.getInstance(context)
 
     var mapInstance by remember { mutableStateOf<MapLibreMap?>(null) }
     var locationService by remember { mutableStateOf<LocationService?>(null) }
 
-    // --- CUSTOM PIN STATES ---
-    var isPlacingPin by remember { mutableStateOf(false) }
-    var newPinName by remember { mutableStateOf("") }
-    var selectedMarkerForDeletion by remember { mutableStateOf<CustomMarker?>(null) }
-    val savedMarkers = remember { mutableStateListOf<CustomMarker>() }
+    var showRideHistory by remember { mutableStateOf(false) }
+    var rideList by remember { mutableStateOf<List<RideEntity>>(emptyList()) }
+    val coroutineScope = rememberCoroutineScope()
+    val db = remember { RideDatabase.getDatabase(context) }
 
-    // Load markers from SharedPreferences on startup
-    LaunchedEffect(Unit) {
-        val savedJson = prefs.getString("custom_markers", "[]")
-        val jsonArray = JSONArray(savedJson)
-        for (i in 0 until jsonArray.length()) {
-            val obj = jsonArray.getJSONObject(i)
-            savedMarkers.add(CustomMarker(obj.getString("name"), obj.getDouble("lat"), obj.getDouble("lng")))
+    var selectedRide by remember { mutableStateOf<RideEntity?>(null) }
+
+    var showNameDialog by remember { mutableStateOf(false) }
+    var pendingRideName by remember { mutableStateOf("") }
+
+    LaunchedEffect(showRideHistory) {
+        if (showRideHistory) {
+            withContext(Dispatchers.IO) {
+                val list = db.rideDao().getAllRides()
+                withContext(Dispatchers.Main) {
+                    rideList = list
+                }
+            }
         }
     }
 
@@ -140,8 +146,8 @@ fun TelemetryScreen(
     }
 
     val isTracking by locationService?.isTracking?.collectAsState() ?: remember { mutableStateOf(false) }
+    val rawRoutePoints by locationService?.routePoints?.collectAsState() ?: remember { mutableStateOf(emptyList<Point>()) }
     val matchedRoutePoints by locationService?.matchedRoutePoints?.collectAsState() ?: remember { mutableStateOf(emptyList<Point>()) }
-
     val rideDistance by locationService?.rideDistance?.collectAsState() ?: remember { mutableStateOf(0f) }
     val maxSpeed by locationService?.maxSpeed?.collectAsState() ?: remember { mutableStateOf(0f) }
     val rideStartTime by locationService?.rideStartTime?.collectAsState() ?: remember { mutableStateOf(0L) }
@@ -162,30 +168,45 @@ fun TelemetryScreen(
         }
     }
 
-    // Reactively draws the Trail Line
-    LaunchedEffect(matchedRoutePoints, mapInstance) {
+    // UPDATED: Now listens to isTracking to ensure the map instantly wipes clean if tracking stops
+    LaunchedEffect(rawRoutePoints, matchedRoutePoints, mapInstance, selectedRide, isTracking) {
         mapInstance?.getStyle { style ->
             val source = style.getSourceAs<GeoJsonSource>("route-source")
-            if (source != null && matchedRoutePoints.size > 1) {
-                source.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(matchedRoutePoints)))
-            } else if (source != null && matchedRoutePoints.isEmpty()) {
-                source.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(emptyList<Point>())))
+            if (source != null) {
+                val pointsToDisplay = when {
+                    selectedRide != null -> {
+                        if (selectedRide!!.matchedRoutePoints.size > 1) {
+                            selectedRide!!.matchedRoutePoints
+                        } else {
+                            selectedRide!!.rawRoutePoints
+                        }
+                    }
+                    // Prevent any drawing before the ride officially starts
+                    !isTracking -> emptyList()
+                    matchedRoutePoints.size > 1 -> matchedRoutePoints
+                    rawRoutePoints.size > 1 -> rawRoutePoints
+                    else -> emptyList()
+                }
+
+                if (pointsToDisplay.size > 1) {
+                    source.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(pointsToDisplay)))
+                } else {
+                    source.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(emptyList<Point>())))
+                }
             }
         }
     }
 
-    // Reactively draws the Custom Pins whenever savedMarkers.size changes
-    LaunchedEffect(savedMarkers.size, mapInstance) {
-        mapInstance?.getStyle { style ->
-            val source = style.getSourceAs<GeoJsonSource>("saved-pins-source")
-            if (source != null) {
-                val featureList = savedMarkers.map { marker ->
-                    val point = Point.fromLngLat(marker.lng, marker.lat)
-                    val feature = Feature.fromGeometry(point)
-                    feature.addStringProperty("name", marker.name)
-                    feature
+    LaunchedEffect(selectedRide, mapInstance) {
+        selectedRide?.let { ride ->
+            mapInstance?.let { map ->
+                val pointsToUse = if (ride.matchedRoutePoints.isNotEmpty()) ride.matchedRoutePoints else ride.rawRoutePoints
+                if (pointsToUse.size >= 2) {
+                    val bounds = computeBoundingBox(pointsToUse)
+                    if (bounds != null) {
+                        map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 100))
+                    }
                 }
-                source.setGeoJson(FeatureCollection.fromFeatures(featureList))
             }
         }
     }
@@ -218,22 +239,15 @@ fun TelemetryScreen(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onDestroy()
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF090909))
-    ) {
-        // --- TOP 50%: MAP AREA ---
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF090909))) {
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.50f)
+                .fillMaxHeight(if (selectedRide != null) 1f else 0.50f)
                 .align(Alignment.TopCenter)
         ) {
             AndroidView(
@@ -242,7 +256,6 @@ fun TelemetryScreen(
                         getMapAsync { map ->
                             mapInstance = map
                             map.setStyle("https://tiles.openfreemap.org/styles/liberty") { style ->
-
                                 style.addSource(GeoJsonSource("route-source"))
                                 style.addLayer(
                                     LineLayer("route-layer", "route-source").withProperties(
@@ -250,35 +263,6 @@ fun TelemetryScreen(
                                         PropertyFactory.lineWidth(6f),
                                         PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                                         PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                                    )
-                                )
-
-                                // Initial pin setup for when map first boots
-                                val initialFeatures = savedMarkers.map { marker ->
-                                    val feature = Feature.fromGeometry(Point.fromLngLat(marker.lng, marker.lat))
-                                    feature.addStringProperty("name", marker.name)
-                                    feature
-                                }
-
-                                style.addSource(GeoJsonSource("saved-pins-source", FeatureCollection.fromFeatures(initialFeatures)))
-
-                                style.addLayer(
-                                    CircleLayer("saved-pins-circle-layer", "saved-pins-source").withProperties(
-                                        PropertyFactory.circleColor(android.graphics.Color.parseColor("#FF8800")),
-                                        PropertyFactory.circleRadius(10f),
-                                        PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
-                                        PropertyFactory.circleStrokeWidth(2f)
-                                    )
-                                )
-                                // Safely format the text layer so it doesn't break the source
-                                style.addLayer(
-                                    SymbolLayer("saved-pins-text-layer", "saved-pins-source").withProperties(
-                                        PropertyFactory.textField("{name}"),
-                                        PropertyFactory.textColor(android.graphics.Color.BLACK),
-                                        PropertyFactory.textHaloColor(android.graphics.Color.WHITE),
-                                        PropertyFactory.textHaloWidth(2f),
-                                        PropertyFactory.textOffset(arrayOf(0f, -1.5f)),
-                                        PropertyFactory.textSize(12f)
                                     )
                                 )
 
@@ -293,296 +277,314 @@ fun TelemetryScreen(
                                     locationComponent.zoomWhileTracking(16.5)
                                 }
                             }
-
-                            // --- CLICK LISTENER FOR DELETING PINS ---
-                            map.addOnMapClickListener { point ->
-                                val pixel = map.projection.toScreenLocation(point)
-                                val rectF = RectF(pixel.x - 40f, pixel.y - 40f, pixel.x + 40f, pixel.y + 40f)
-                                val features = map.queryRenderedFeatures(rectF, "saved-pins-circle-layer", "saved-pins-text-layer")
-
-                                if (features.isNotEmpty()) {
-                                    val clickedName = features[0].getStringProperty("name")
-                                    val foundMarker = savedMarkers.find { it.name == clickedName }
-                                    if (foundMarker != null) {
-                                        selectedMarkerForDeletion = foundMarker
-                                        isPlacingPin = false
-                                    }
-                                    true
-                                } else {
-                                    selectedMarkerForDeletion = null
-                                    false
-                                }
-                            }
                         }
                     }
                 },
                 modifier = Modifier.fillMaxSize()
             )
 
-            // --- CUSTOM PIN UI (TOP LEFT) ---
-            if (isPlacingPin) {
-                Icon(
-                    imageVector = Icons.Default.LocationOn,
-                    contentDescription = "Target",
-                    tint = Color(0xFFFF8800),
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(36.dp)
-                        .offset(y = (-18).dp)
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                        .align(Alignment.TopCenter)
-                        .background(Color(0xFF1E1E1E).copy(alpha = 0.95f), RoundedCornerShape(12.dp))
-                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BasicTextField(
-                        value = newPinName,
-                        onValueChange = { newPinName = it },
-                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
-                        cursorBrush = SolidColor(Color.White),
-                        modifier = Modifier.weight(1f),
-                        decorationBox = { innerTextField ->
-                            if (newPinName.isEmpty()) {
-                                Text("Name this location...", color = Color.Gray, fontSize = 16.sp)
-                            }
-                            innerTextField()
-                        }
-                    )
-
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Cancel",
-                        tint = Color.Gray,
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clickable {
-                                isPlacingPin = false
-                                newPinName = ""
-                            }
-                            .padding(4.dp)
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .background(Color(0xFF25D366), RoundedCornerShape(50))
-                            .clickable {
-                                if (newPinName.isNotBlank()) {
-                                    val target = mapInstance?.cameraPosition?.target
-                                    if (target != null) {
-                                        // Update state (this triggers the LaunchedEffect to draw the pin)
-                                        savedMarkers.add(CustomMarker(newPinName, target.latitude, target.longitude))
-
-                                        // Save to memory
-                                        val jsonArray = JSONArray()
-                                        savedMarkers.forEach {
-                                            val obj = JSONObject()
-                                            obj.put("name", it.name)
-                                            obj.put("lat", it.lat)
-                                            obj.put("lng", it.lng)
-                                            jsonArray.put(obj)
-                                        }
-                                        prefs.edit().putString("custom_markers", jsonArray.toString()).apply()
-
-                                        isPlacingPin = false
-                                        newPinName = ""
-                                    }
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = "Save Pin",
-                            tint = Color.Black,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            } else if (selectedMarkerForDeletion != null) {
-                // DELETE PIN OVERLAY
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                        .align(Alignment.TopCenter)
-                        .background(Color(0xFF1E1E1E).copy(alpha = 0.95f), RoundedCornerShape(12.dp))
-                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = selectedMarkerForDeletion!!.name,
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Cancel",
-                        tint = Color.Gray,
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clickable { selectedMarkerForDeletion = null }
-                            .padding(4.dp)
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .background(Color(0xFFE53935), RoundedCornerShape(50))
-                            .clickable {
-                                // Update state (triggers LaunchedEffect to erase the pin)
-                                savedMarkers.remove(selectedMarkerForDeletion)
-
-                                // Permanently delete from phone memory
-                                val jsonArray = JSONArray()
-                                savedMarkers.forEach {
-                                    val obj = JSONObject()
-                                    obj.put("name", it.name)
-                                    obj.put("lat", it.lat)
-                                    obj.put("lng", it.lng)
-                                    jsonArray.put(obj)
-                                }
-                                prefs.edit().putString("custom_markers", jsonArray.toString()).apply()
-
-                                selectedMarkerForDeletion = null
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Delete Pin",
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            } else {
-                // Default Top-Left "Add Pin" Button
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(16.dp)
-                        .size(48.dp)
-                        .background(Color(0xFF1E1E1E).copy(alpha = 0.9f), RoundedCornerShape(50))
-                        .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(50))
-                        .clickable {
-                            isPlacingPin = true
-                            mapInstance?.locationComponent?.cameraMode = CameraMode.NONE
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AddLocation,
-                        contentDescription = "Add Pin",
-                        tint = Color.White,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-
-            // Re-center button (Bottom Right)
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
+                    .align(Alignment.TopStart)
                     .padding(16.dp)
                     .size(48.dp)
                     .background(Color(0xFF1E1E1E).copy(alpha = 0.9f), RoundedCornerShape(50))
                     .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(50))
                     .clickable {
-                        mapInstance?.locationComponent?.let { locationComponent ->
-                            if (locationComponent.isLocationComponentActivated) {
-                                locationComponent.cameraMode = CameraMode.TRACKING_COMPASS
-                                locationComponent.zoomWhileTracking(16.5)
-                            }
+                        if (selectedRide != null) {
+                            selectedRide = null
+                        } else {
+                            showRideHistory = true
                         }
                     },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.LocationOn,
-                    contentDescription = "Re-center Map",
-                    tint = Color(0xFF7ED4E0),
+                    imageVector = if (selectedRide != null) Icons.Default.ArrowBack else Icons.Default.Menu,
+                    contentDescription = if (selectedRide != null) "Back to Tracking" else "Ride History Menu",
+                    tint = Color.White,
                     modifier = Modifier.size(24.dp)
                 )
             }
+
+            if (selectedRide == null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                        .size(48.dp)
+                        .background(Color(0xFF1E1E1E).copy(alpha = 0.9f), RoundedCornerShape(50))
+                        .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(50))
+                        .clickable {
+                            mapInstance?.locationComponent?.let { locationComponent ->
+                                if (locationComponent.isLocationComponentActivated) {
+                                    locationComponent.cameraMode = CameraMode.TRACKING_COMPASS
+                                    locationComponent.zoomWhileTracking(16.5)
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = "Re-center Map",
+                        tint = Color(0xFF7ED4E0),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
         }
 
-        // --- BOTTOM 50%: DASHBOARD & BUTTON ---
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.50f)
-                .align(Alignment.BottomCenter)
-                .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 34.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceEvenly
-        ) {
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+        if (selectedRide != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+                    .padding(horizontal = 24.dp)
+                    .fillMaxWidth()
+                    .background(Color(0xFF000000).copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
+                    .padding(vertical = 16.dp),
+                contentAlignment = Alignment.Center
             ) {
-                MetricItem(title = "DISTANCE", value = String.format("%.2f", rideDistance), label = "km")
-                MetricItem(title = "DURATION", value = durationText, label = "hr:min")
-                MetricItem(title = "TOP SPEED", value = String.format("%.1f", maxSpeed), label = "km/h")
-            }
-
-            if (isTracking) {
-                SlideToStopButton(
-                    onStop = { locationService?.stopTracking() }
+                Text(
+                    text = selectedRide!!.name,
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
                 )
-            } else {
-                Button(
-                    onClick = {
-                        val intent = Intent(context, LocationService::class.java)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                context.startForegroundService(intent)
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.50f)
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 34.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceEvenly
+            ) {
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MetricItem(title = "DISTANCE", value = String.format("%.2f", rideDistance), label = "km")
+                    MetricItem(title = "DURATION", value = durationText, label = "hr:min")
+                    MetricItem(title = "TOP SPEED", value = String.format("%.1f", maxSpeed), label = "km/h")
+                }
+
+                if (isTracking) {
+                    SlideToStopButton(
+                        onStop = {
+                            selectedRide = null
+
+                            // NEW: Distance logic intercept!
+                            if (rideDistance >= 0.1f) {
+                                showNameDialog = true
                             } else {
-                                context.startService(intent)
+                                locationService?.stopTracking("Discarded")
+                                Toast.makeText(context, "Ride discarded: Less than 100m", Toast.LENGTH_SHORT).show()
                             }
-                            locationService?.startTracking()
                         }
-                    },
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                    )
+                } else {
+                    Button(
+                        onClick = {
+                            selectedRide = null
+                            val intent = Intent(context, LocationService::class.java)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                            ) {
+                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    context.startForegroundService(intent)
+                                } else {
+                                    context.startService(intent)
+                                }
+                                locationService?.startTracking()
+                            }
+                        },
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                    ) {
+                        Text(
+                            text = "START RIDE",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            letterSpacing = 1.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        if (showNameDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.8f))
+                    .clickable(enabled = false) {},
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
                     modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .background(Color(0xFF1E1E1E), RoundedCornerShape(16.dp))
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Name Your Ride", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = pendingRideName,
+                        onValueChange = { pendingRideName = it },
+                        placeholder = { Text("e.g. Morning Commute", color = Color.Gray) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = Color(0xFF7ED4E0),
+                            unfocusedBorderColor = Color.DarkGray
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = {
+                            val finalName = if (pendingRideName.isNotBlank()) pendingRideName else "Unnamed Ride"
+                            locationService?.stopTracking(finalName)
+                            showNameDialog = false
+                            pendingRideName = ""
+                        },
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7ED4E0)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Save Ride", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+                }
+            }
+        }
+
+        if (showRideHistory) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .clickable { showRideHistory = false }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 24.dp)
                         .fillMaxWidth()
-                        .height(64.dp)
+                        .clickable(enabled = false) {}
                 ) {
                     Text(
-                        text = "START RIDE",
-                        color = Color.Black,
+                        text = "Ride History",
+                        color = Color.White,
+                        fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        letterSpacing = 1.sp
+                        modifier = Modifier
+                            .padding(bottom = 16.dp)
+                            .align(Alignment.CenterHorizontally)
                     )
+
+                    if (rideList.isEmpty()) {
+                        Text(
+                            text = "No rides saved.",
+                            color = Color.Gray,
+                            fontSize = 16.sp,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxHeight(0.6f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(rideList) { ride ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp))
+                                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                                        .padding(16.dp)
+                                        .clickable {
+                                            selectedRide = ride
+                                            showRideHistory = false
+                                        },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = ride.name,
+                                            color = Color.White,
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "${String.format("%.2f", ride.distanceKm)} km • ${String.format("%.1f", ride.maxSpeedKmh)} km/h max",
+                                            color = Color.Gray,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete Ride",
+                                        tint = Color(0xFFE53935),
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clickable {
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    db.rideDao().deleteRideById(ride.id)
+                                                    val updatedList = db.rideDao().getAllRides()
+                                                    withContext(Dispatchers.Main) {
+                                                        rideList = updatedList
+                                                    }
+                                                }
+                                            }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-// --- SUB-COMPONENTS ---
+fun computeBoundingBox(points: List<Point>): LatLngBounds? {
+    if (points.isEmpty()) return null
+
+    var minLat = points[0].latitude()
+    var maxLat = points[0].latitude()
+    var minLng = points[0].longitude()
+    var maxLng = points[0].longitude()
+
+    for (point in points) {
+        val lat = point.latitude()
+        val lng = point.longitude()
+        if (lat < minLat) minLat = lat
+        if (lat > maxLat) maxLat = lat
+        if (lng < minLng) minLng = lng
+        if (lng > maxLng) maxLng = lng
+    }
+
+    return LatLngBounds.Builder()
+        .include(LatLng(minLat, minLng))
+        .include(LatLng(maxLat, maxLng))
+        .build()
+}
 
 @Composable
 fun MetricItem(title: String, value: String, label: String) {

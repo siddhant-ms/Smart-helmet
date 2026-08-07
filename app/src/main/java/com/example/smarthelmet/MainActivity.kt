@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+
     private fun startLocationUpdates() {
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
             .setMinUpdateIntervalMillis(500)
