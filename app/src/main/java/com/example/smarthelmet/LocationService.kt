@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.example.smarthelmet.database.TelemetryPoint
 import com.google.android.gms.location.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +51,14 @@ class LocationService : Service() {
     private val _rideStartTime = MutableStateFlow(0L)
     val rideStartTime: StateFlow<Long> = _rideStartTime
 
+    // Speed-vs-Time telemetry, now with location on each sample (see TelemetryPoint)
+    private val _speedHistory = MutableStateFlow<List<TelemetryPoint>>(emptyList())
+    val speedHistory: StateFlow<List<TelemetryPoint>> = _speedHistory
+
+    // Sampling throttle state — not exposed, just controls when we append to _speedHistory
+    private var lastSpeedSampleTime = 0L
+    private var lastSampledSpeedKmh = -1f // sentinel so the very first sample always records
+
     private var lastBluetoothSendTime = 0L
 
     inner class LocalBinder : Binder() {
@@ -75,8 +84,8 @@ class LocationService : Service() {
                 // 2. SPEED CALCULATION
                 var currentSpeedKmh = location.speed * 3.6f
 
-                // Clamped to 6 km/h. If it's slower than brisk walking, ignore it.
-                if (currentSpeedKmh < 6.0f) {
+                // Clamped to 4 km/h. If it's slower than brisk walking, ignore it.
+                if (currentSpeedKmh < 4.0f) {
                     currentSpeedKmh = 0f
                 }
 
@@ -84,8 +93,28 @@ class LocationService : Service() {
                     _maxSpeed.value = currentSpeedKmh
                 }
 
-                // 3. BLUETOOTH & DASHBOARD
                 val currentTime = System.currentTimeMillis()
+
+                // 3. SPEED HISTORY SAMPLING (throttled + change-triggered)
+                // Runs on every accuracy-passing fix — deliberately BEFORE the anti-drift
+                // gate below, so stops (speed clamped to 0) still show up as a dip on the
+                // graph instead of a gap. Kept lightweight: only records a point every 5s,
+                // or immediately if speed jumped by 5+ km/h since the last recorded sample.
+                val timeSinceLastSample = currentTime - lastSpeedSampleTime
+                val speedDelta = kotlin.math.abs(currentSpeedKmh - lastSampledSpeedKmh)
+                if (lastSampledSpeedKmh < 0f || timeSinceLastSample >= 5000L || speedDelta >= 5f) {
+                    val elapsedSec = ((currentTime - _rideStartTime.value) / 1000L).toInt()
+                    _speedHistory.value = _speedHistory.value + TelemetryPoint(
+                        timeSec = elapsedSec,
+                        speedKmh = currentSpeedKmh,
+                        lat = location.latitude,
+                        lng = location.longitude
+                    )
+                    lastSpeedSampleTime = currentTime
+                    lastSampledSpeedKmh = currentSpeedKmh
+                }
+
+                // 4. BLUETOOTH & DASHBOARD
                 val timeSinceLastSend = currentTime - lastBluetoothSendTime
                 val requiredInterval = if (currentSpeedKmh >= 10f) 500L else 2000L
                 if (timeSinceLastSend >= requiredInterval) {
@@ -93,7 +122,7 @@ class LocationService : Service() {
                     lastBluetoothSendTime = currentTime
                 }
 
-                // 4. THE ANTI-DRIFT GATE
+                // 5. THE ANTI-DRIFT GATE
                 // If clamped to 0, stop right here.
                 if (currentSpeedKmh == 0f) return
 
@@ -109,7 +138,7 @@ class LocationService : Service() {
                         results
                     )
 
-                    // 5. DISTANCE FILTER: Must move at least 5 meters
+                    // 6. DISTANCE FILTER: Must move at least 5 meters
                     if (results[0] < 5.0f) return
 
                     _rideDistance.value += (results[0] / 1000f)
@@ -154,6 +183,11 @@ class LocationService : Service() {
         _maxSpeed.value = 0f
         _rideStartTime.value = System.currentTimeMillis()
 
+        // NEW: reset speed-history + sampling throttle state for the new ride
+        _speedHistory.value = emptyList()
+        lastSpeedSampleTime = 0L
+        lastSampledSpeedKmh = -1f
+
         startForeground(NOTIFICATION_ID, createNotification())
 
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000)
@@ -187,6 +221,7 @@ class LocationService : Service() {
 
         val rawPoints = _routePoints.value.toList()
         val matchedPoints = _matchedRoutePoints.value.toList()
+        val finalSpeedHistory = _speedHistory.value.toList() // NEW
 
         serviceScope.launch(Dispatchers.IO) {
             if (rawPoints.isNotEmpty() && finalDistance >= 0.1f) {
@@ -199,7 +234,8 @@ class LocationService : Service() {
                         distanceKm = finalDistance,
                         maxSpeedKmh = finalMaxSpeed,
                         rawRoutePoints = rawPoints,
-                        matchedRoutePoints = matchedPoints
+                        matchedRoutePoints = matchedPoints,
+                        speedHistory = finalSpeedHistory
                     )
                     db.rideDao().insertRide(newRide)
                 } catch (e: Exception) {}

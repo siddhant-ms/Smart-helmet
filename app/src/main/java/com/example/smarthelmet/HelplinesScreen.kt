@@ -327,13 +327,25 @@ fun HelplinesScreen(navController: NavController) {
                 contentAlignment = Alignment.Center
             ) {
                 AnimatedContent(
-                    targetState = selectedNumber,
+                    targetState = centerIndex,
                     transitionSpec = {
-                        (slideInVertically { height -> height } + fadeIn(tween(300))).togetherWith(
-                            slideOutVertically { height -> -height } + fadeOut(tween(300)))
+                        if (targetState > initialState) {
+                            // Scrolling forward/right: new number comes from bottom, old goes up
+                            (slideInVertically { height -> height } + fadeIn(tween(300))).togetherWith(
+                                slideOutVertically { height -> -height } + fadeOut(tween(300))
+                            )
+                        } else {
+                            // Scrolling backward/left: new number comes from top, old goes down
+                            (slideInVertically { height -> -height } + fadeIn(tween(300))).togetherWith(
+                                slideOutVertically { height -> height } + fadeOut(tween(300))
+                            )
+                        }
                     },
                     label = "numberAnimation"
-                ) { number ->
+                ) { targetIndex ->
+                    // Resolve the number for the current target index
+                    val number = rsaBrands.getOrNull(targetIndex)?.number ?: ""
+
                     Row(
                         modifier = Modifier
                             .background(

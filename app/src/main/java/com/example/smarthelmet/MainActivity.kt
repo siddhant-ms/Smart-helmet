@@ -9,6 +9,8 @@ import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
@@ -30,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
 
 class MainActivity : ComponentActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -66,7 +69,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    fun sendContactsToBluetooth(contacts: List<Contact>) {
+    fun sendContactsToBluetooth(contacts: List<Contact>, riderName: String) {
         val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
 
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
@@ -96,20 +99,30 @@ class MainActivity : ComponentActivity() {
                 socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
                 socket.connect()
 
+                // 1. Send the Contacts Payload
                 val contactString = contacts.joinToString(",") { "${it.name}|${it.number}" }
-                val message = "CONTACTS:$contactString\n"
-
-                socket.outputStream.write(message.toByteArray())
+                val contactsMessage = "CONTACTS:$contactString\n"
+                socket.outputStream.write(contactsMessage.toByteArray())
                 socket.outputStream.flush()
-                delay(1000)
+
+                // Wait 500ms for the ESP32 buffer to process the first string
+                delay(500)
+
+                // 2. Send the Rider Name Payload
+                val ownerMessage = "OWNER:$riderName\n"
+                socket.outputStream.write(ownerMessage.toByteArray())
+                socket.outputStream.flush()
+
+                // Optional padding before closing the socket
+                delay(500)
 
                 withContext(Dispatchers.Main) {
-                    android.widget.Toast.makeText(this@MainActivity, "✅ Contacts Synced to Helmet!", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this@MainActivity, " Contacts & Profile Synced to Helmet!", android.widget.Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
-                    android.widget.Toast.makeText(this@MainActivity, "❌ Connection failed! Is the helmet turned on?", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this@MainActivity, " Connection failed! Is the helmet turned on?", android.widget.Toast.LENGTH_LONG).show()
                 }
             } finally {
                 socket?.close()
@@ -141,7 +154,9 @@ class MainActivity : ComponentActivity() {
                     NavHost(
                         navController = navController,
                         startDestination = BottomNavItem.Home.route,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        enterTransition = { EnterTransition.None },
+                        exitTransition = { ExitTransition.None }
                     ) {
                         composable(BottomNavItem.Home.route) { HomeScreen(navController) }
                         composable(BottomNavItem.Contacts.route) { ManageContactsScreen(navController) }

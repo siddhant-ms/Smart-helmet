@@ -31,11 +31,13 @@ import androidx.navigation.NavController
 import com.example.smarthelmet.models.Contact
 import org.json.JSONArray
 
+
 @Composable
 fun ManageContactsScreen(navController: NavController) {
     val context = LocalContext.current
     val prefs = context.getSharedPreferences("shelmet_contacts", Context.MODE_PRIVATE)
     val contacts = remember { mutableStateListOf<Contact>() }
+    var riderName by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         val saved = prefs.getString("contacts", null)
@@ -256,11 +258,15 @@ fun ManageContactsScreen(navController: NavController) {
                         val jsonArray = JSONArray()
                         contacts.forEach { jsonArray.put("${it.name}|${it.number}") }
 
+                        // Fetch the native profile name automatically
+                        val autoRiderName = getDeviceOwnerName(context)
+
                         prefs.edit()
                             .putString("contacts", jsonArray.toString())
                             .apply()
 
-                        (context as? MainActivity)?.sendContactsToBluetooth(contacts)
+                        // Pass BOTH the contacts and the fetched name to your MainActivity
+                        (context as? MainActivity)?.sendContactsToBluetooth(contacts, autoRiderName)
                     }
             ) {
                 Text(
@@ -298,4 +304,32 @@ fun ManageContactsScreen(navController: NavController) {
             }
         }
     }
+}
+
+
+
+
+
+fun getDeviceOwnerName(context: Context): String {
+    var ownerName = "the rider" // Fallback if the profile is empty
+    val uri = ContactsContract.Profile.CONTENT_URI
+    val projection = arrayOf(ContactsContract.Profile.DISPLAY_NAME_PRIMARY)
+
+    try {
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(ContactsContract.Profile.DISPLAY_NAME_PRIMARY)
+                if (nameIndex != -1) {
+                    val retrievedName = cursor.getString(nameIndex)
+                    if (!retrievedName.isNullOrBlank()) {
+                        ownerName = retrievedName
+                    }
+                }
+            }
+        }
+    } catch (e: SecurityException) {
+        // Will trigger if READ_CONTACTS permission is not granted
+        e.printStackTrace()
+    }
+    return ownerName
 }

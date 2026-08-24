@@ -59,11 +59,14 @@ import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import androidx.compose.material.icons.Icons
@@ -76,6 +79,8 @@ import androidx.compose.material3.Icon
 
 import com.example.smarthelmet.database.RideDatabase
 import com.example.smarthelmet.database.RideEntity
+import com.example.smarthelmet.database.TelemetryPoint
+import kotlin.math.sin
 
 @Composable
 fun TelemetryScreen(
@@ -100,19 +105,19 @@ fun TelemetryScreen(
 
     var selectedRide by remember { mutableStateOf<RideEntity?>(null) }
 
+    // Which telemetry point the user is currently scrubbed to on the speed graph,
+    // for the selected ride. Drives the marker on the map below.
+    var scrubbedPoint by remember { mutableStateOf<TelemetryPoint?>(null) }
+
+    // Clear the scrub marker whenever a different ride is opened/closed.
+    LaunchedEffect(selectedRide) {
+        scrubbedPoint = null
+    }
+
     var showNameDialog by remember { mutableStateOf(false) }
     var pendingRideName by remember { mutableStateOf("") }
 
-    LaunchedEffect(showRideHistory) {
-        if (showRideHistory) {
-            withContext(Dispatchers.IO) {
-                val list = db.rideDao().getAllRides()
-                withContext(Dispatchers.Main) {
-                    rideList = list
-                }
-            }
-        }
-    }
+
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -168,11 +173,21 @@ fun TelemetryScreen(
         }
     }
 
-    // UPDATED: Now listens to isTracking to ensure the map instantly wipes clean if tracking stops
     LaunchedEffect(rawRoutePoints, matchedRoutePoints, mapInstance, selectedRide, isTracking) {
         mapInstance?.getStyle { style ->
-            val source = style.getSourceAs<GeoJsonSource>("route-source")
-            if (source != null) {
+            val flatSource = style.getSourceAs<GeoJsonSource>("route-source")
+            val gradientSource = style.getSourceAs<GeoJsonSource>("speed-route-source")
+
+            val locatedTelemetry = selectedRide?.speedHistory?.filter { it.hasLocation } ?: emptyList()
+
+            if (selectedRide != null && locatedTelemetry.size > 1) {
+                // Ride has location-tagged speed samples: draw the speed-colored trail
+                // and leave the flat line empty so they don't double up.
+                gradientSource?.setGeoJson(speedGradientFeatureCollection(locatedTelemetry))
+                flatSource?.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(emptyList<Point>())))
+            } else {
+                gradientSource?.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
+
                 val pointsToDisplay = when {
                     selectedRide != null -> {
                         if (selectedRide!!.matchedRoutePoints.size > 1) {
@@ -181,7 +196,6 @@ fun TelemetryScreen(
                             selectedRide!!.rawRoutePoints
                         }
                     }
-                    // Prevent any drawing before the ride officially starts
                     !isTracking -> emptyList()
                     matchedRoutePoints.size > 1 -> matchedRoutePoints
                     rawRoutePoints.size > 1 -> rawRoutePoints
@@ -189,10 +203,23 @@ fun TelemetryScreen(
                 }
 
                 if (pointsToDisplay.size > 1) {
-                    source.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(pointsToDisplay)))
+                    flatSource?.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(pointsToDisplay)))
                 } else {
-                    source.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(emptyList<Point>())))
+                    flatSource?.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(emptyList<Point>())))
                 }
+            }
+        }
+    }
+
+    // Moves the scrub marker to match whatever point the user is dragging to on the graph.
+    LaunchedEffect(scrubbedPoint, mapInstance) {
+        mapInstance?.getStyle { style ->
+            val markerSource = style.getSourceAs<GeoJsonSource>("scrub-marker-source")
+            val point = scrubbedPoint
+            if (point != null && point.hasLocation) {
+                markerSource?.setGeoJson(Feature.fromGeometry(Point.fromLngLat(point.lng!!, point.lat!!)))
+            } else {
+                markerSource?.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
             }
         }
     }
@@ -246,8 +273,7 @@ fun TelemetryScreen(
 
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(if (selectedRide != null) 1f else 0.50f)
+                .fillMaxSize()
                 .align(Alignment.TopCenter)
         ) {
             AndroidView(
@@ -263,6 +289,40 @@ fun TelemetryScreen(
                                         PropertyFactory.lineWidth(6f),
                                         PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                                         PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                                    )
+                                )
+
+                                // Speed-colored trail for a selected ride's review. Only shown when
+                                // that ride's telemetry has lat/lng on it (see TelemetryPoint) — plain
+                                // route-layer above stays as the fallback for live tracking and for
+                                // rides without location-tagged speed samples.
+                                style.addSource(GeoJsonSource("speed-route-source"))
+                                style.addLayer(
+                                    LineLayer("speed-route-layer", "speed-route-source").withProperties(
+                                        PropertyFactory.lineWidth(6f),
+                                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                                        PropertyFactory.lineColor(
+                                            Expression.interpolate(
+                                                Expression.linear(),
+                                                Expression.get("speed"),
+                                                Expression.stop(0f, Expression.color(android.graphics.Color.parseColor("#3AA0FF"))),
+                                                Expression.stop(30f, Expression.color(android.graphics.Color.parseColor("#7ED4E0"))),
+                                                Expression.stop(60f, Expression.color(android.graphics.Color.parseColor("#FFC53D"))),
+                                                Expression.stop(90f, Expression.color(android.graphics.Color.parseColor("#FF4D4D")))
+                                            )
+                                        )
+                                    )
+                                )
+
+                                // Marker synced to wherever the user is scrubbed on the speed graph.
+                                style.addSource(GeoJsonSource("scrub-marker-source"))
+                                style.addLayer(
+                                    CircleLayer("scrub-marker-layer", "scrub-marker-source").withProperties(
+                                        PropertyFactory.circleRadius(8f),
+                                        PropertyFactory.circleColor(android.graphics.Color.WHITE),
+                                        PropertyFactory.circleStrokeWidth(3f),
+                                        PropertyFactory.circleStrokeColor(android.graphics.Color.parseColor("#7ED4E0"))
                                     )
                                 )
 
@@ -310,7 +370,7 @@ fun TelemetryScreen(
             if (selectedRide == null) {
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
+                        .align(Alignment.CenterEnd)
                         .padding(16.dp)
                         .size(48.dp)
                         .background(Color(0xFF1E1E1E).copy(alpha = 0.9f), RoundedCornerShape(50))
@@ -336,16 +396,17 @@ fun TelemetryScreen(
         }
 
         if (selectedRide != null) {
-            Box(
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 32.dp)
-                    .padding(horizontal = 24.dp)
                     .fillMaxWidth()
-                    .background(Color(0xFF000000).copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
-                    .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center
+                    .background(
+                        color = Color(0xFF090909).copy(alpha = 0.80f), // Alpha lowered to 0.80f
+                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+                    )
+                    // Top padding reduced to 12.dp
+                    .padding(top = 12.dp, bottom = 90.dp, start = 16.dp, end = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     text = selectedRide!!.name,
@@ -354,14 +415,27 @@ fun TelemetryScreen(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp
                 )
+
+                Spacer(modifier = Modifier.height(8.dp)) // Spacer reduced to 8.dp
+
+                SpeedTimeGraph(
+                    data = selectedRide!!.speedHistory,
+                    startTimeMs = selectedRide!!.startTime,
+                    modifier = Modifier.fillMaxWidth(),
+                    onScrub = { scrubbedPoint = it }
+                )
             }
         } else {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.50f)
                     .align(Alignment.BottomCenter)
-                    .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 34.dp),
+                    .fillMaxWidth()
+                    .background(
+                        color = Color(0xFF090909).copy(alpha = 0.95f),
+                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+                    )
+                    // Bottom padding increased to 110.dp to give the "Start Ride" screen more space
+                    .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 110.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceEvenly
             ) {
@@ -376,12 +450,12 @@ fun TelemetryScreen(
                     MetricItem(title = "TOP SPEED", value = String.format("%.1f", maxSpeed), label = "km/h")
                 }
 
+                Spacer(modifier = Modifier.height(24.dp))
+
                 if (isTracking) {
                     SlideToStopButton(
                         onStop = {
                             selectedRide = null
-
-                            // NEW: Distance logic intercept!
                             if (rideDistance >= 0.1f) {
                                 showNameDialog = true
                             } else {
@@ -563,6 +637,25 @@ fun TelemetryScreen(
     }
 }
 
+// Builds one small LineString feature per consecutive pair of located telemetry
+// points, each tagged with a "speed" property. The speed-route-layer's
+// Expression.interpolate reads that property per segment to color it.
+fun speedGradientFeatureCollection(points: List<TelemetryPoint>): FeatureCollection {
+    if (points.size < 2) return FeatureCollection.fromFeatures(emptyList())
+    val features = mutableListOf<Feature>()
+    for (i in 0 until points.size - 1) {
+        val a = points[i]
+        val b = points[i + 1]
+        val segment = LineString.fromLngLats(
+            listOf(Point.fromLngLat(a.lng!!, a.lat!!), Point.fromLngLat(b.lng!!, b.lat!!))
+        )
+        val feature = Feature.fromGeometry(segment)
+        feature.addNumberProperty("speed", b.speedKmh)
+        features.add(feature)
+    }
+    return FeatureCollection.fromFeatures(features)
+}
+
 fun computeBoundingBox(points: List<Point>): LatLngBounds? {
     if (points.isEmpty()) return null
 
@@ -674,3 +767,4 @@ fun SlideToStopButton(onStop: () -> Unit) {
         }
     }
 }
+
