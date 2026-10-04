@@ -41,14 +41,14 @@ fun HelplinesScreen(navController: NavController) {
     val context = LocalContext.current
 
     val rsaBrands = listOf(
-        RSABrand("Hero MotoCorp", "1800-266-0018"),
-        RSABrand("Honda", "1800-103-3121"),
+        RSABrand("Hero MotoCorp", "1800-309-9793"),
+        RSABrand("Honda", "1800-103-3434"),
         RSABrand("TVS Motor", "1800-258-7111"),
         RSABrand("Bajaj Auto", "7219821111"),
         RSABrand("Suzuki", "1800-121-7996"),
         RSABrand("Royal Enfield", "1800-210-0007"),
         RSABrand("Yamaha", "1800-420-1600"),
-        RSABrand("Ather Energy", "1800-123-0033"),
+        RSABrand("Ather Energy", "7676811777"),
         RSABrand("Ola Electric", "080-33113311"),
         RSABrand("KTM", "1800-2050-300")
     )
