@@ -141,32 +141,18 @@ fun TelemetryScreen(
         mutableStateOf("")
     }
 
-    fun hasLocationPermission(): Boolean {
-        val fineGranted =
-            ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-
-        val coarseGranted =
-            ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-
-        return fineGranted || coarseGranted
-    }
+    /*
+     * Start Ride request.
+     *
+     * We always request the service to start first.
+     *
+     * If the service is already connected, tracking can begin immediately.
+     *
+     * If it isn't connected yet, pendingStart remains true and
+     * onServiceConnected() starts tracking as soon as the binder arrives.
+     */
     fun requestStartRide() {
         if (pendingStart) {
-            return
-        }
-
-        if (!hasLocationPermission()) {
-            Toast.makeText(
-                context,
-                "Location permission is required to start a ride.",
-                Toast.LENGTH_SHORT
-            ).show()
             return
         }
 
@@ -206,8 +192,6 @@ fun TelemetryScreen(
                 service.startTracking()
 
             if (!started) {
-                context.stopService(intent)
-
                 Toast.makeText(
                     context,
                     "Ride could not start. Check location permission.",
@@ -272,10 +256,6 @@ fun TelemetryScreen(
                             connectedService.startTracking()
 
                         if (!started) {
-                            context.stopService(
-                                Intent(context, LocationService::class.java)
-                            )
-
                             Toast.makeText(
                                 context,
                                 "Ride could not start. Check location permission.",
@@ -704,10 +684,12 @@ fun TelemetryScreen(
             )
     ) {
 
+        /*
+         * Full-screen map layer.
+         */
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .align(Alignment.TopCenter)
         ) {
 
             AndroidView(
@@ -719,10 +701,30 @@ fun TelemetryScreen(
 
                             mapInstance = map
 
+                            /*
+                             * Move MapLibre's native compass slightly downward
+                             * so it lines up better with the hamburger button.
+                             *
+                             * Parameters:
+                             * left, top, right, bottom
+                             */
+                            val density =
+                                context.resources.displayMetrics.density
+
+                            map.uiSettings.setCompassMargins(
+                                0,
+                                (32f * density).toInt(),
+                                (16f * density).toInt(),
+                                0
+                            )
+
                             map.setStyle(
                                 "https://tiles.openfreemap.org/styles/liberty"
                             ) { style ->
 
+                                /*
+                                 * Live route source.
+                                 */
                                 style.addSource(
                                     GeoJsonSource(
                                         "route-source"
@@ -752,7 +754,7 @@ fun TelemetryScreen(
                                 )
 
                                 /*
-                                 * Speed-colored historical route.
+                                 * Historical speed-colored route.
                                  */
                                 style.addSource(
                                     GeoJsonSource(
@@ -778,6 +780,7 @@ fun TelemetryScreen(
                                             Expression.interpolate(
                                                 Expression.linear(),
                                                 Expression.get("speed"),
+
                                                 Expression.stop(
                                                     0f,
                                                     Expression.color(
@@ -786,6 +789,7 @@ fun TelemetryScreen(
                                                         )
                                                     )
                                                 ),
+
                                                 Expression.stop(
                                                     30f,
                                                     Expression.color(
@@ -794,6 +798,7 @@ fun TelemetryScreen(
                                                         )
                                                     )
                                                 ),
+
                                                 Expression.stop(
                                                     60f,
                                                     Expression.color(
@@ -802,6 +807,7 @@ fun TelemetryScreen(
                                                         )
                                                     )
                                                 ),
+
                                                 Expression.stop(
                                                     90f,
                                                     Expression.color(
@@ -816,7 +822,7 @@ fun TelemetryScreen(
                                 )
 
                                 /*
-                                 * Graph scrub marker.
+                                 * Scrub marker for historical rides.
                                  */
                                 style.addSource(
                                     GeoJsonSource(
@@ -847,10 +853,7 @@ fun TelemetryScreen(
                                 )
 
                                 /*
-                                 * MapLibre's location component.
-                                 *
-                                 * Permission handling itself will be
-                                 * cleaned up in the dedicated permission phase.
+                                 * MapLibre location component.
                                  */
                                 val locationComponent =
                                     map.locationComponent
@@ -859,8 +862,10 @@ fun TelemetryScreen(
                                     ActivityCompat.checkSelfPermission(
                                         context,
                                         Manifest.permission.ACCESS_FINE_LOCATION
-                                    ) == PackageManager.PERMISSION_GRANTED
+                                    ) ==
+                                    PackageManager.PERMISSION_GRANTED
                                 ) {
+
                                     locationComponent
                                         .activateLocationComponent(
                                             LocationComponentActivationOptions
@@ -894,12 +899,17 @@ fun TelemetryScreen(
             )
 
             /*
-             * Ride history / back button.
+             * -------------------------------------------------------------
+             * TOP-LEFT: Ride history / back button
+             * -------------------------------------------------------------
              */
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(16.dp)
+                    .padding(
+                        top = 32.dp,
+                        start = 16.dp
+                    )
                     .size(48.dp)
                     .background(
                         Color(0xFF1E1E1E).copy(
@@ -917,13 +927,17 @@ fun TelemetryScreen(
                     .clickable {
 
                         if (selectedRide != null) {
+
                             selectedRide = null
+
                         } else {
+
                             showRideHistory = true
 
                             coroutineScope.launch(
                                 Dispatchers.IO
                             ) {
+
                                 val rides =
                                     db.rideDao()
                                         .getAllRides()
@@ -938,6 +952,7 @@ fun TelemetryScreen(
                     },
                 contentAlignment = Alignment.Center
             ) {
+
                 Icon(
                     imageVector =
                         if (selectedRide != null) {
@@ -945,25 +960,41 @@ fun TelemetryScreen(
                         } else {
                             Icons.Default.Menu
                         },
+
                     contentDescription =
                         if (selectedRide != null) {
                             "Back to Tracking"
                         } else {
                             "Ride History Menu"
                         },
+
                     tint = Color.White,
+
                     modifier = Modifier.size(24.dp)
                 )
             }
 
             /*
-             * Re-center button.
+             * -------------------------------------------------------------
+             * RIGHT SIDE: Re-center location button
+             *
+             * This is intentionally vertically centered relative to the
+             * screen, then moved slightly downward.
+             *
+             * It is NOT tied to the compass position.
+             * -------------------------------------------------------------
              */
             if (selectedRide == null) {
+
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
-                        .padding(16.dp)
+                        .padding(
+                            end = 16.dp
+                        )
+                        .offset(
+                            y = 56.dp
+                        )
                         .size(48.dp)
                         .background(
                             Color(0xFF1E1E1E).copy(
@@ -988,6 +1019,7 @@ fun TelemetryScreen(
                                         locationComponent
                                             .isLocationComponentActivated
                                     ) {
+
                                         locationComponent.cameraMode =
                                             CameraMode.TRACKING_COMPASS
 
@@ -1000,19 +1032,584 @@ fun TelemetryScreen(
                         },
                     contentAlignment = Alignment.Center
                 ) {
+
                     Icon(
                         imageVector =
                             Icons.Default.LocationOn,
+
                         contentDescription =
                             "Re-center Map",
+
                         tint =
                             Color(0xFF7ED4E0),
+
                         modifier =
                             Modifier.size(24.dp)
                     )
                 }
             }
         }
+
+        /*
+         * -------------------------------------------------------------
+         * HISTORICAL RIDE PANEL
+         * -------------------------------------------------------------
+         */
+        if (selectedRide != null) {
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(
+                        color =
+                            Color(0xFF090909).copy(
+                                alpha = 0.80f
+                            ),
+                        shape =
+                            RoundedCornerShape(
+                                topStart = 24.dp,
+                                topEnd = 24.dp
+                            )
+                    )
+                    .padding(
+                        top = 12.dp,
+                        bottom = 90.dp,
+                        start = 16.dp,
+                        end = 16.dp
+                    ),
+                horizontalAlignment =
+                    Alignment.CenterHorizontally
+            ) {
+
+                Text(
+                    text = selectedRide!!.name,
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                SpeedTimeGraph(
+                    data =
+                        selectedRide!!.speedHistory,
+
+                    startTimeMs =
+                        selectedRide!!.startTime,
+
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    onScrub = {
+                        scrubbedPoint = it
+                    }
+                )
+            }
+
+        } else {
+
+            /*
+             * -------------------------------------------------------------
+             * LIVE RIDE CONTROL PANEL
+             * -------------------------------------------------------------
+             */
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(
+                        color =
+                            Color(0xFF090909).copy(
+                                alpha = 0.95f
+                            ),
+                        shape =
+                            RoundedCornerShape(
+                                topStart = 24.dp,
+                                topEnd = 24.dp
+                            )
+                    )
+                    .padding(
+                        start = 24.dp,
+                        end = 24.dp,
+                        top = 24.dp,
+                        bottom = 110.dp
+                    ),
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+
+                verticalArrangement =
+                    Arrangement.SpaceEvenly
+            ) {
+
+                Row(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    horizontalArrangement =
+                        Arrangement.SpaceEvenly,
+
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+
+                    MetricItem(
+                        title = "DISTANCE",
+
+                        value =
+                            String.format(
+                                "%.2f",
+                                rideDistance
+                            ),
+
+                        label = "km",
+
+                        modifier =
+                            Modifier.weight(1f)
+                    )
+
+                    MetricItem(
+                        title = "DURATION",
+
+                        value =
+                            durationText,
+
+                        label = "hr:min",
+
+                        modifier =
+                            Modifier.weight(1f)
+                    )
+
+                    MetricItem(
+                        title = "TOP SPEED",
+
+                        value =
+                            String.format(
+                                "%.1f",
+                                maxSpeed
+                            ),
+
+                        label = "km/h",
+
+                        modifier =
+                            Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(24.dp)
+                )
+
+                if (isTracking) {
+
+                    SlideToStopButton(
+                        onStop = {
+
+                            selectedRide = null
+
+                            if (rideDistance >= 0.1f) {
+
+                                showNameDialog = true
+
+                            } else {
+
+                                locationService?.stopTracking()
+
+                                Toast.makeText(
+                                    context,
+                                    "Ride discarded: Less than 100m",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    )
+
+                } else {
+
+                    Button(
+                        onClick = {
+                            requestStartRide()
+                        },
+
+                        enabled =
+                            !pendingStart,
+
+                        shape =
+                            RoundedCornerShape(50),
+
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor =
+                                    Color.White
+                            ),
+
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(64.dp)
+                    ) {
+
+                        Text(
+                            text =
+                                if (pendingStart) {
+                                    "STARTING..."
+                                } else {
+                                    "START RIDE"
+                                },
+
+                            color =
+                                Color.Black,
+
+                            fontWeight =
+                                FontWeight.Bold,
+
+                            fontSize =
+                                16.sp,
+
+                            letterSpacing =
+                                1.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        /*
+         * -------------------------------------------------------------
+         * SAVE RIDE DIALOG
+         * -------------------------------------------------------------
+         */
+        if (showNameDialog) {
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Color.Black.copy(
+                            alpha = 0.8f
+                        )
+                    )
+                    .clickable(
+                        enabled = false
+                    ) {},
+
+                contentAlignment =
+                    Alignment.Center
+            ) {
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .background(
+                            Color(0xFF1E1E1E),
+                            RoundedCornerShape(16.dp)
+                        )
+                        .padding(24.dp),
+
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally
+                ) {
+
+                    Text(
+                        text = "Name Your Ride",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(16.dp)
+                    )
+
+                    OutlinedTextField(
+                        value = pendingRideName,
+
+                        onValueChange = {
+                            pendingRideName = it
+                        },
+
+                        placeholder = {
+                            Text(
+                                text = "e.g. Morning Commute",
+                                color = Color.Gray
+                            )
+                        },
+
+                        colors =
+                            OutlinedTextFieldDefaults.colors(
+                                focusedTextColor =
+                                    Color.White,
+
+                                unfocusedTextColor =
+                                    Color.White,
+
+                                focusedBorderColor =
+                                    Color(0xFF7ED4E0),
+
+                                unfocusedBorderColor =
+                                    Color.DarkGray
+                            ),
+
+                        singleLine = true,
+
+                        modifier =
+                            Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(24.dp)
+                    )
+
+                    Button(
+                        onClick = {
+
+                            val finalName =
+                                if (
+                                    pendingRideName
+                                        .isNotBlank()
+                                ) {
+                                    pendingRideName
+                                } else {
+                                    "Unnamed Ride"
+                                }
+
+                            locationService?.stopTracking()
+
+                            showNameDialog = false
+
+                            pendingRideName = ""
+                        },
+
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(50.dp),
+
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor =
+                                    Color(0xFF7ED4E0)
+                            ),
+
+                        shape =
+                            RoundedCornerShape(
+                                12.dp
+                            )
+                    ) {
+
+                        Text(
+                            text = "Save Ride",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        /*
+         * -------------------------------------------------------------
+         * RIDE HISTORY OVERLAY
+         * -------------------------------------------------------------
+         */
+        if (showRideHistory) {
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Color.Black.copy(
+                            alpha = 0.85f
+                        )
+                    )
+                    .clickable {
+                        showRideHistory = false
+                    }
+            ) {
+
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(
+                            horizontal = 24.dp
+                        )
+                        .fillMaxWidth()
+                        .clickable(
+                            enabled = false
+                        ) {}
+                ) {
+
+                    Text(
+                        text = "Ride History",
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+
+                        modifier =
+                            Modifier
+                                .padding(
+                                    bottom = 16.dp
+                                )
+                                .align(
+                                    Alignment.CenterHorizontally
+                                )
+                    )
+
+                    if (rideList.isEmpty()) {
+
+                        Text(
+                            text = "No rides saved.",
+                            color = Color.Gray,
+                            fontSize = 16.sp,
+
+                            modifier =
+                                Modifier.align(
+                                    Alignment.CenterHorizontally
+                                )
+                        )
+
+                    } else {
+
+                        LazyColumn(
+                            modifier =
+                                Modifier.fillMaxHeight(
+                                    0.6f
+                                ),
+
+                            verticalArrangement =
+                                Arrangement.spacedBy(
+                                    12.dp
+                                )
+                        ) {
+
+                            items(
+                                rideList
+                            ) { ride ->
+
+                                Row(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .background(
+                                                Color(0xFF1E1E1E),
+                                                RoundedCornerShape(
+                                                    12.dp
+                                                )
+                                            )
+                                            .border(
+                                                1.dp,
+                                                Color.White.copy(
+                                                    alpha = 0.1f
+                                                ),
+                                                RoundedCornerShape(
+                                                    12.dp
+                                                )
+                                            )
+                                            .padding(
+                                                16.dp
+                                            )
+                                            .clickable {
+
+                                                selectedRide =
+                                                    ride
+
+                                                showRideHistory =
+                                                    false
+                                            },
+
+                                    verticalAlignment =
+                                        Alignment.CenterVertically
+                                ) {
+
+                                    Column(
+                                        modifier =
+                                            Modifier.weight(
+                                                1f
+                                            )
+                                    ) {
+
+                                        Text(
+                                            text =
+                                                ride.name,
+
+                                            color =
+                                                Color.White,
+
+                                            fontSize =
+                                                18.sp,
+
+                                            fontWeight =
+                                                FontWeight.SemiBold
+                                        )
+
+                                        Text(
+                                            text =
+                                                "${String.format(
+                                                    "%.2f",
+                                                    ride.distanceKm
+                                                )} km • " +
+                                                        "${String.format(
+                                                            "%.1f",
+                                                            ride.maxSpeedKmh
+                                                        )} km/h max",
+
+                                            color =
+                                                Color.Gray,
+
+                                            fontSize =
+                                                14.sp
+                                        )
+                                    }
+
+                                    Icon(
+                                        imageVector =
+                                            Icons.Default.Delete,
+
+                                        contentDescription =
+                                            "Delete Ride",
+
+                                        tint =
+                                            Color(0xFFE53935),
+
+                                        modifier =
+                                            Modifier
+                                                .size(28.dp)
+                                                .clickable {
+
+                                                    coroutineScope.launch(
+                                                        Dispatchers.IO
+                                                    ) {
+
+                                                        db.rideDao()
+                                                            .deleteRideById(
+                                                                ride.id
+                                                            )
+
+                                                        val updatedList =
+                                                            db.rideDao()
+                                                                .getAllRides()
+
+                                                        withContext(
+                                                            Dispatchers.Main
+                                                        ) {
+                                                            rideList =
+                                                                updatedList
+                                                        }
+                                                    }
+                                                }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
 
         /*
          * Historical ride panel.
@@ -1073,6 +1670,11 @@ fun TelemetryScreen(
 
             /*
              * Live ride controls.
+             *
+             * Do not impose a height constraint on this island. The original
+             * design intentionally occupies a stable amount of space at the
+             * bottom of the map. Only the metric contents adapt to narrower
+             * displays.
              */
             Column(
                 modifier = Modifier
@@ -1101,40 +1703,40 @@ fun TelemetryScreen(
                     Arrangement.SpaceEvenly
             ) {
 
-                Row(
-                    modifier =
-                        Modifier.fillMaxWidth(),
-                    horizontalArrangement =
-                        Arrangement.SpaceEvenly,
-                    verticalAlignment =
-                        Alignment.CenterVertically
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
+                    val compactMetrics = maxWidth < 360.dp
 
-                    MetricItem(
-                        title = "DISTANCE",
-                        value =
-                            String.format(
-                                "%.2f",
-                                rideDistance
-                            ),
-                        label = "km"
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        MetricItem(
+                            modifier = Modifier.weight(1f),
+                            title = "DISTANCE",
+                            value = String.format("%.2f", rideDistance),
+                            label = "km",
+                            compact = compactMetrics
+                        )
 
-                    MetricItem(
-                        title = "DURATION",
-                        value = durationText,
-                        label = "hr:min"
-                    )
+                        MetricItem(
+                            modifier = Modifier.weight(1f),
+                            title = "DURATION",
+                            value = durationText,
+                            label = "hr:min",
+                            compact = compactMetrics
+                        )
 
-                    MetricItem(
-                        title = "TOP SPEED",
-                        value =
-                            String.format(
-                                "%.1f",
-                                maxSpeed
-                            ),
-                        label = "km/h"
-                    )
+                        MetricItem(
+                            modifier = Modifier.weight(1f),
+                            title = "TOP SPEED",
+                            value = String.format("%.1f", maxSpeed),
+                            label = "km/h",
+                            compact = compactMetrics
+                        )
+                    }
                 }
 
                 Spacer(
@@ -1152,10 +1754,7 @@ fun TelemetryScreen(
                                 showNameDialog = true
                             } else {
 
-                                locationService
-                                    ?.stopTracking(
-                                        "Discarded"
-                                    )
+                                locationService?.stopTracking()
 
                                 Toast.makeText(
                                     context,
@@ -1293,10 +1892,7 @@ fun TelemetryScreen(
                                     "Unnamed Ride"
                                 }
 
-                            locationService
-                                ?.stopTracking(
-                                    finalName
-                                )
+                            locationService?.stopTracking()
 
                             showNameDialog = false
                             pendingRideName = ""
@@ -1629,22 +2225,19 @@ fun computeBoundingBox(
 fun MetricItem(
     title: String,
     value: String,
-    label: String
+    label: String,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
     Column(
-        horizontalAlignment =
-            Alignment.CenterHorizontally
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-
         Text(
             text = title,
-            color =
-                Color.Gray.copy(
-                    alpha = 0.8f
-                ),
-            fontSize = 11.sp,
-            fontWeight =
-                FontWeight.SemiBold,
+            color = Color.Gray.copy(alpha = 0.8f),
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.SemiBold,
             letterSpacing = 1.sp
         )
 
@@ -1655,15 +2248,14 @@ fun MetricItem(
         Text(
             text = value,
             color = Color.White,
-            fontSize = 28.sp,
-            fontWeight =
-                FontWeight.Bold
+            fontSize = if (compact) 24.sp else 28.sp,
+            fontWeight = FontWeight.Bold
         )
 
         Text(
             text = label,
             color = Color(0xFF7ED4E0),
-            fontSize = 13.sp
+            fontSize = if (compact) 12.sp else 13.sp
         )
     }
 }

@@ -1,57 +1,66 @@
 package com.example.smarthelmet.ui.theme
 
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
+/*
+ * Shelmet uses a dark, fixed visual language across the entire app.
+ *
+ * Dynamic Material colors are intentionally not used here because they
+ * can change the appearance of Material components based on the user's
+ * wallpaper/device color configuration.
+ */
+private val ShelmetDarkColorScheme = darkColorScheme(
+    primary = Color(0xFF7ED4E0),
+    onPrimary = Color(0xFF061014),
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
+    primaryContainer = Color(0xFF16363C),
+    onPrimaryContainer = Color(0xFFB7F3FA),
 
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
+    secondary = Color(0xFFA3B18A),
+    onSecondary = Color(0xFF182016),
+
+    secondaryContainer = Color(0xFF35412F),
+    onSecondaryContainer = Color(0xFFD1DFC0),
+
+    tertiary = Color(0xFFC24934),
     onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+
+    background = Color(0xFF090909),
+    onBackground = Color.White,
+
+    surface = Color(0xFF101010),
+    onSurface = Color.White,
+
+    surfaceVariant = Color(0xFF1E1E1E),
+    onSurfaceVariant = Color(0xFFB8B8B8),
+
+    outline = Color(0xFF4A4A4A),
+    outlineVariant = Color(0xFF2A2A2A),
+
+    error = Color(0xFFFF5449),
+    onError = Color.White,
+
+    errorContainer = Color(0xFF5C1512),
+    onErrorContainer = Color(0xFFFFDAD6)
 )
 
 @Composable
 fun SmartHelmetTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
+    /*
+     * darkTheme and dynamicColor remain as parameters so existing
+     * calls such as SmartHelmetTheme { ... } continue to compile.
+     *
+     * Shelmet intentionally always uses the fixed dark scheme.
+     */
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = ShelmetDarkColorScheme,
         typography = Typography,
         content = content
     )
