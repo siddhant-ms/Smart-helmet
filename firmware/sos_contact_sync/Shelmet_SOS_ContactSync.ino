@@ -97,12 +97,9 @@ String readModemUntilToken(const String &token1, const String &token2,
 
 String sendAT(const String &command, unsigned long timeoutMs = AT_TIMEOUT_MS) {
   while (modem.available()) modem.read();
-  Serial.println("[MODEM >>] " + command);
   modem.print(command);
   modem.print("\r");
-  String response = readModemFor(timeoutMs);
-  Serial.println("[MODEM <<] " + response);
-  return response;
+  return readModemFor(timeoutMs);
 }
 
 bool waitForAT() {
@@ -388,7 +385,6 @@ void handleBluetoothMessage(String data) {
 
 bool waitForModemPrompt() {
   String response = readModemUntilToken(">", "ERROR", SMS_PROMPT_TIMEOUT_MS);
-  Serial.println("[MODEM << SMS PROMPT] " + response);
   return response.indexOf('>') >= 0 && response.indexOf("ERROR") < 0;
 }
 
@@ -431,7 +427,6 @@ bool sendSingleSMS(const String &rawNumber, const String &message) {
   modem.write(26); // Ctrl+Z submits the SMS.
 
   String response = readModemUntilToken("+CMGS:", "ERROR", SMS_RESULT_TIMEOUT_MS);
-  Serial.println("[MODEM << SMS RESULT] " + response);
 
   if (response.indexOf("+CMGS:") >= 0 && response.indexOf("ERROR") < 0) {
     Serial.println("[SMS] SUBMITTED successfully to " + number +
@@ -470,8 +465,7 @@ void triggerEmergencySMS() {
     return;
   }
 
-  Serial.println("[SOS] Message: " + message);
-  Serial.println("[SOS] Recipients: " + String(contactCount));
+  Serial.println("[SOS] Sending to " + String(contactCount) + " saved contact(s).");
 
   if (!modemReady) {
     Serial.println("[MODEM] Retesting AT communication...");
@@ -483,11 +477,9 @@ void triggerEmergencySMS() {
     return;
   }
 
-  if (!waitForNetwork(30000)) {
-    Serial.println("[SOS] ABORTED: modem is not registered on the network.");
-    smsInProgress = false;
-    return;
-  }
+  // Compatibility test: use the earlier firmware's approach and attempt SMS
+  // directly instead of blocking on CREG registration status first.
+  Serial.println("[SOS] Attempting SMS directly (network pre-check skipped).");
 
   int submitted = 0;
   int failed = 0;
@@ -499,10 +491,8 @@ void triggerEmergencySMS() {
     if (i + 1 < contactCount) delay(CONTACT_SEND_GAP_MS);
   }
 
-  Serial.println();
-  Serial.println("[SOS] BATCH FINISHED: " + String(submitted) +
-                 " submitted, " + String(failed) + " failed.");
-  Serial.println("[SOS] SMS submission does not prove handset delivery.");
+  Serial.println("[SOS] Result: " + String(submitted) + " submitted, " +
+                 String(failed) + " failed.");
   Serial.println("==========================================");
   smsInProgress = false;
 }
@@ -610,9 +600,8 @@ void loop() {
       printContacts("Current Contacts");
     } else if (command == "MODEM_CHECK") {
       modemReady = waitForAT();
-      if (modemReady) waitForNetwork(10000);
     } else {
-      Serial.println("[SERIAL] Unknown command. Use TEST_SMS, SHOW_CONTACTS, MODEM_CHECK.");
+      Serial.println("[SERIAL] Commands: TEST_SMS, SHOW_CONTACTS, MODEM_CHECK.");
     }
   }
 }
