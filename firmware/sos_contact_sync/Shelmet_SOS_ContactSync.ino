@@ -435,7 +435,9 @@ bool sendSingleSMS(const String &rawNumber, const String &message) {
   }
 
   if (response.indexOf("ERROR") >= 0) {
-    Serial.println("[SMS] FAILED: Modem/network returned ERROR for " + number);
+    response.trim();
+    Serial.println("[SMS] FAILED for " + number);
+    Serial.println("[SMS] Modem error: " + response);
   } else {
     Serial.println("[SMS] TIMEOUT: No +CMGS confirmation for " + number);
   }
