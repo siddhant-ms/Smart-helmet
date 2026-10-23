@@ -399,8 +399,9 @@ void handleBluetoothMessage(String data) {
     double lat = strtod(latText.c_str(), &latEnd);
     double lon = strtod(lonText.c_str(), &lonEnd);
 
-    if (latEnd == latText.c_str() || *latEnd != '\\0' ||
-        lonEnd == lonText.c_str() || *lonEnd != '\\0' ||
+    if (latEnd == latText.c_str() || *latEnd != '\0' ||
+        lonEnd == lonText.c_str() || *lonEnd != '\0' ||
+        !isfinite(lat) || !isfinite(lon) ||
         lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
       Serial.println("[GPS] Ignored invalid coordinates.");
       return;
@@ -486,6 +487,16 @@ bool sendSingleSMS(const String &rawNumber, const String &message) {
 }
 
 void triggerEmergencySMS() {
+  // GPS telemetry is emitted only during an active app ride. Require a recent
+  // valid fix so the physical button cannot send an SOS outside that ride.
+  bool rideLocationIsFresh =
+      !latestPhoneLocation.isEmpty() &&
+      lastLocationReceiveTime > 0 &&
+      millis() - lastLocationReceiveTime <= LOCATION_MAX_AGE_MS;
+  if (!rideLocationIsFresh) {
+    return;
+  }
+
   if (smsInProgress) {
     Serial.println("[SOS] Ignored: an SMS batch is already running.");
     return;
