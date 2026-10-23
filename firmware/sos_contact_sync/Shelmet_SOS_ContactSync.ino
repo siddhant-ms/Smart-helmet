@@ -181,7 +181,7 @@ void printContacts(const char *heading) {
 }
 
 void loadSavedData() {
-  if (!prefs.begin("shelmet", true)) {
+  if (!prefs.begin("helmet", true)) {
     Serial.println("[FLASH] ERROR: Could not open Preferences for reading.");
     return;
   }
@@ -227,7 +227,7 @@ void loadSavedData() {
 
 bool saveContactListAtomically(Contact *newContacts, int newCount) {
   Preferences writePrefs;
-  if (!writePrefs.begin("shelmet", false)) {
+  if (!writePrefs.begin("helmet", false)) {
     Serial.println("[FLASH] ERROR: Cannot open storage for writing.");
     return false;
   }
@@ -257,7 +257,7 @@ bool saveContactListAtomically(Contact *newContacts, int newCount) {
 
 bool saveRiderName(const String &name) {
   Preferences p;
-  if (!p.begin("shelmet", false)) {
+  if (!p.begin("helmet", false)) {
     Serial.println("[FLASH] ERROR: Cannot open storage for rider name.");
     return false;
   }
