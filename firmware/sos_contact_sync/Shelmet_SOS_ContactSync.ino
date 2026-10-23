@@ -1,12 +1,13 @@
 /*
   SHELMET — Bluetooth Contacts + Rider Name + Physical SOS SMS
   Board: LilyGO T-Call A7670E V1.0
-  Scope: Bluetooth SPP, contact sync/persistence, rider name, button-triggered SMS.
-  Excludes MPU, accident detection, ride state, speed alerts, and GPS.
+  Scope: Bluetooth SPP, contact sync/persistence, rider name, phone GPS, button-triggered SMS.
+  Excludes MPU, accident detection, ride state, and speed alerts.
 
-  Android app protocol (matches Smart-helmet MainActivity.kt):
+  Android app protocol:
     CONTACTS:Mom|+919876543210,Dad|+919876543211\n
     OWNER:Siddhant\n
+    LOC:12.971600,77.594600\n
 
   Button wiring for this test:
     GPIO18 -- push button -- GND (INPUT_PULLUP)
@@ -35,6 +36,7 @@ static const unsigned long AT_TIMEOUT_MS = 2500;
 static const unsigned long SMS_PROMPT_TIMEOUT_MS = 10000;
 static const unsigned long SMS_RESULT_TIMEOUT_MS = 60000;
 static const unsigned long CONTACT_SEND_GAP_MS = 1500;
+static const unsigned long LOCATION_MAX_AGE_MS = 15000;
 
 BluetoothSerial SerialBT;
 HardwareSerial modem(1);
@@ -49,6 +51,8 @@ Contact contacts[MAX_CONTACTS];
 int contactCount = 0;
 String riderName = "Unknown Rider";
 String btBuffer;
+String latestPhoneLocation;
+unsigned long lastLocationReceiveTime = 0;
 
 bool modemReady = false;
 bool smsInProgress = false;
@@ -375,6 +379,43 @@ void handleBluetoothMessage(String data) {
     return;
   }
 
+  if (data.startsWith("LOC:")) {
+    String coordinates = data.substring(4);
+    coordinates.trim();
+
+    int comma = coordinates.indexOf(',');
+    if (comma <= 0 || comma >= (int)coordinates.length() - 1) {
+      Serial.println("[GPS] Ignored malformed LOC message.");
+      return;
+    }
+
+    String latText = coordinates.substring(0, comma);
+    String lonText = coordinates.substring(comma + 1);
+    latText.trim();
+    lonText.trim();
+
+    char *latEnd = nullptr;
+    char *lonEnd = nullptr;
+    double lat = strtod(latText.c_str(), &latEnd);
+    double lon = strtod(lonText.c_str(), &lonEnd);
+
+    if (latEnd == latText.c_str() || *latEnd != '\\0' ||
+        lonEnd == lonText.c_str() || *lonEnd != '\\0' ||
+        lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+      Serial.println("[GPS] Ignored invalid coordinates.");
+      return;
+    }
+
+    bool firstLocation = latestPhoneLocation.isEmpty();
+    latestPhoneLocation = String(lat, 6) + "," + String(lon, 6);
+    lastLocationReceiveTime = millis();
+
+    if (firstLocation) {
+      Serial.println("[GPS] Location received.");
+    }
+    return;
+  }
+
   if (data == "PING") {
     Serial.println("[BT] PING received; Bluetooth link is working.");
     return;
@@ -458,6 +499,19 @@ void triggerEmergencySMS() {
 
   String message = "EMERGENCY ALERT: " + riderName +
                    " is in an emergency and may need immediate assistance.";
+
+  bool locationIsFresh =
+      !latestPhoneLocation.isEmpty() &&
+      lastLocationReceiveTime > 0 &&
+      millis() - lastLocationReceiveTime <= LOCATION_MAX_AGE_MS;
+
+  if (locationIsFresh) {
+    message += " Location: https://maps.google.com/?q=" + latestPhoneLocation;
+    Serial.println("[GPS] Adding current location link to SMS.");
+  } else {
+    message += " Location unavailable (no recent phone GPS fix).";
+    Serial.println("[GPS] No recent location; SMS will state unavailable.");
+  }
 
   if (contactCount == 0) {
     Serial.println("[SOS] ERROR: No contacts saved. No SMS sent.");
