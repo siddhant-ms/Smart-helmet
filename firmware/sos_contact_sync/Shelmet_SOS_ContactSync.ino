@@ -53,6 +53,7 @@ String riderName = "Unknown Rider";
 String btBuffer;
 String latestPhoneLocation;
 unsigned long lastLocationReceiveTime = 0;
+bool locationStreamingActive = false;
 
 bool modemReady = false;
 bool smsInProgress = false;
@@ -407,12 +408,13 @@ void handleBluetoothMessage(String data) {
       return;
     }
 
-    bool firstLocation = latestPhoneLocation.isEmpty();
+    bool streamWasInactive = !locationStreamingActive;
     latestPhoneLocation = String(lat, 6) + "," + String(lon, 6);
     lastLocationReceiveTime = millis();
+    locationStreamingActive = true;
 
-    if (firstLocation) {
-      Serial.println("[GPS] Location received.");
+    if (streamWasInactive) {
+      Serial.println("[GPS] Location streaming started.");
     }
     return;
   }
@@ -639,6 +641,16 @@ void loop() {
         btBuffer = "";
       }
     }
+  }
+
+  // Announce GPS stream transitions only; suppress per-coordinate logging.
+  if (locationStreamingActive &&
+      lastLocationReceiveTime > 0 &&
+      millis() - lastLocationReceiveTime > LOCATION_MAX_AGE_MS) {
+    locationStreamingActive = false;
+    latestPhoneLocation = "";
+    lastLocationReceiveTime = 0;
+    Serial.println("[GPS] Location streaming stopped.");
   }
 
   // Debounced physical button: trigger only on HIGH -> LOW stable transition.
